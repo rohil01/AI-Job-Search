@@ -51,28 +51,17 @@ class AIClient:
         load_dotenv(project_root / ".env")
 
         config = config or {}
-        # Blank model or URL means "use the env preset" (NVIDIA, or OpenAI
-        # when AI_PROVIDER=openai). A stored empty string must not stick.
         self.ai_model = str(config.get("ai_model") or "").strip() or AI_MODEL
         base_url = str(config.get("ai_base_url") or "").strip() or AI_BASE_URL
         api_key = resolve_api_key(base_url, config.get("api_key"))
         self.base_url = base_url
         timeout_s = float(config.get("timeout_seconds") or AI_TIMEOUT_SECONDS)
-        # Scoring always shares the NVIDIA limiter. A rewrite pointed at
-        # another host must not take a slot on that limiter.
         self._rate_limited = bool(config.get("rate_limited", True))
         effort = config.get("reasoning_effort")
         self.reasoning_effort = str(
             AI_REASONING_EFFORT if effort is None else effort
         ).strip().lower()
 
-        # max_retries=0: the SDK's internal retries bypass our rate limiter,
-        # which let bursts exceed NVIDIA's cap (429s). Our parse() retry loop
-        # owns all retrying, so every attempt is rate-limited.
-        # timeout: the SDK default is 10 MINUTES — a hung connection (NVIDIA
-        # accepts then never answers) stalled scoring threads that long before
-        # our retry loop could act. 90s covers slow generation, fails fast on
-        # dead connections. connect timeout kept tight at 15s.
         self._client = OpenAI(
             api_key=api_key or "not-used",
             base_url=base_url,

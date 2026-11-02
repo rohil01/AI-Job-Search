@@ -1190,7 +1190,7 @@ def fail_interrupted_rewrites() -> int:
             """
             UPDATE resume_rewrites
             SET status = 'error',
-                error = 'Rewrite stopped because the app restarted. Use Rerun rewrite.'
+                error = 'Rewrite stopped because the app restarted. Use Resume rewrite.'
             WHERE status = 'running'
             """
         )

@@ -11,7 +11,7 @@ function newestReady(rewrites) {
   return (rewrites || []).find((row) => row?.docx_ready) || null
 }
 
-export default function RewritePanel({ job, startToken = 0 }) {
+export default function RewritePanel({ job }) {
   const [attempt, setAttempt] = useState(null)
   const [download, setDownload] = useState(null)
   const [error, setError] = useState('')
@@ -53,12 +53,6 @@ export default function RewritePanel({ job, startToken = 0 }) {
     return () => clearInterval(timer)
   }, [running, job.job_key])
 
-  useEffect(() => {
-    if (startToken > 0) run()
-    // startToken is the only trigger for the automatic run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startToken])
-
   async function run() {
     setError('')
     setAttempt((current) => ({ ...(current || {}), status: 'running', winning_patches: [] }))
@@ -92,13 +86,13 @@ export default function RewritePanel({ job, startToken = 0 }) {
           disabled
           title={running || !attempt
             ? 'Available when the rewrite finishes'
-            : attempt.error || 'Re-upload the résumé .docx, then use Rerun rewrite.'}
+            : attempt.error || 'Re-upload the résumé .docx, then use Resume rewrite.'}
         >
           Download résumé
         </button>
       )}
       <button className="btn btn--small" type="button" onClick={run} disabled={running}>
-        {running ? 'Rewriting…' : 'Rerun rewrite'}
+        {running ? 'Rewriting…' : 'Resume rewrite'}
       </button>
       <button
         ref={changesRef}
