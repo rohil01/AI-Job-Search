@@ -5,10 +5,10 @@ import RunsView from './RunsView.jsx'
 import { ErrorBanner, PageHead, Spinner } from './ui.jsx'
 
 const MIX = [
-  { key: 'new', label: 'New', color: '#7aa2f7' },
-  { key: 'accepted', label: 'Accepted', color: '#3dbe7a' },
-  { key: 'manual_rejected', label: 'Rejected', color: '#e05260' },
-  { key: 'auto_rejected', label: 'Auto-rejected', color: '#e2a03f' },
+  { key: 'new', label: 'New', color: '#2F4C7A' },
+  { key: 'accepted', label: 'Accepted', color: '#1B6B45' },
+  { key: 'manual_rejected', label: 'Rejected', color: '#8E2F33' },
+  { key: 'auto_rejected', label: 'Auto-rejected', color: '#5C7A8A' },
 ]
 
 export default function AnalyticsView() {
@@ -44,15 +44,6 @@ export default function AnalyticsView() {
       <ErrorBanner error={error} />
       {loading ? <Spinner label="Loading analytics…" /> : null}
 
-      <div className="stat-grid">
-        <Metric label="Total jobs" value={stats?.total} />
-        <Metric label="New" value={stats?.new} />
-        <Metric label="Accepted" value={stats?.accepted} />
-        <Metric label="Rejected by you" value={stats?.manual_rejected} />
-        <Metric label="Auto-rejected" value={stats?.auto_rejected} />
-        <Metric label="Average score" value={stats?.avg_score ?? '—'} />
-      </div>
-
       <div className="chart-grid">
         <article className="chart-card">
           <header className="chart-card__head">
@@ -63,8 +54,8 @@ export default function AnalyticsView() {
             <AreaChart
               points={points}
               series={[
-                { key: 'scraped', label: 'Scraped', color: '#8ab4ff' },
-                { key: 'fresh', label: 'New', color: '#3dbe7a' },
+                { key: 'scraped', label: 'Scraped', color: '#2F4C7A' },
+                { key: 'fresh', label: 'New', color: '#1B6B45' },
               ]}
             />
           ) : (
@@ -81,6 +72,15 @@ export default function AnalyticsView() {
         </article>
       </div>
 
+      <div className="stat-grid">
+        <Metric label="Total jobs" value={stats?.total} />
+        <Metric label="New" value={stats?.new} />
+        <Metric label="Accepted" value={stats?.accepted} />
+        <Metric label="Rejected by you" value={stats?.manual_rejected} />
+        <Metric label="Auto-rejected" value={stats?.auto_rejected} />
+        <Metric label="Average score" value={stats?.avg_score ?? '—'} />
+      </div>
+
       <div className="chart-card chart-card--wide">
         <header className="chart-card__head">
           <h2>Scoring per run</h2>
@@ -89,7 +89,7 @@ export default function AnalyticsView() {
         {points.length ? (
           <AreaChart
             points={points}
-            series={[{ key: 'scored', label: 'Scored', color: '#c4b5fd' }]}
+            series={[{ key: 'scored', label: 'Scored', color: '#5C7A8A' }]}
           />
         ) : (
           <p className="muted small">No runs to chart yet.</p>

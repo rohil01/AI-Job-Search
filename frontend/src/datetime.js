@@ -75,3 +75,11 @@ export function isSameIstDay(value, now = new Date()) {
   if (!date) return false
   return istTodayYmd(date) === istTodayYmd(now)
 }
+
+/** UTC timestamp in the shape the API stores (`...+00:00`, 6 fractional digits). */
+export function toUtcIso(date) {
+  const iso = date.toISOString()
+  const [head, fraction = '000Z'] = iso.split('.')
+  const ms = fraction.slice(0, 3)
+  return `${head}.${ms}000+00:00`
+}

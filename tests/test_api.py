@@ -116,6 +116,34 @@ def test_rejected_filter_split_and_filtered_total(client):
     assert stats["manual_rejected"] == 1
 
 
+def test_first_seen_window_pages_new_jobs(client):
+    """The New tab asks for one page of jobs first seen on an IST day."""
+    from app import storage
+
+    today = storage.upsert_job({"job_url": "https://x/today", "title": "Today", "score": 10})
+    older = storage.upsert_job({"job_url": "https://x/older", "title": "Older", "score": 99})
+    with storage.transaction() as conn:
+        conn.execute(
+            "UPDATE jobs SET first_seen_at = ? WHERE job_key = ?",
+            ("2026-11-05T04:00:00.000000+00:00", today),
+        )
+        conn.execute(
+            "UPDATE jobs SET first_seen_at = ? WHERE job_key = ?",
+            ("2026-11-01T04:00:00.000000+00:00", older),
+        )
+
+    window = client.get("/jobs", params={
+        "status": "new",
+        "first_seen_from": "2026-11-04T18:30:00.000000+00:00",
+        "first_seen_to": "2026-11-05T18:30:00.000000+00:00",
+        "limit": 40,
+        "order": "score",
+    }).json()
+    assert window["filtered_total"] == 1
+    assert window["count"] == 1
+    assert [job["job_key"] for job in window["jobs"]] == [today]
+
+
 def test_recent_order_excludes_rejected_before_limit(client):
     """The jobs board asks for a page with rejected rows removed first, so
     recency does not return a shorter list than score or title."""

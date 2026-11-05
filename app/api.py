@@ -245,6 +245,8 @@ def list_jobs_endpoint(
     limit: Optional[int] = None,
     offset: int = 0,
     exclude_status: Optional[str] = None,
+    first_seen_from: Optional[str] = None,
+    first_seen_to: Optional[str] = None,
 ) -> JobListResponse:
     """List jobs; ``auto_rejected`` narrows rejected rows to the pipeline's
     experience-window rejects (true) or the operator's own rejects (false).
@@ -254,6 +256,10 @@ def list_jobs_endpoint(
 
     ``exclude_status`` is applied before ``limit``, so a page of active jobs
     is not crowded out by rejected ones.
+
+    ``first_seen_from`` (inclusive) and ``first_seen_to`` (exclusive) bound
+    ``first_seen_at`` before ``limit``. The jobs board uses that for the New
+    tab: jobs first seen on today's IST calendar day, one page at a time.
     """
     if status and status not in ("new", "accepted", "rejected"):
         raise HTTPException(status_code=400, detail="status must be new/accepted/rejected.")
@@ -263,11 +269,13 @@ def list_jobs_endpoint(
         status=status, limit=limit, offset=offset, order=order,
         auto_rejected=auto_rejected, ai_failed=ai_failed,
         exclude_status=exclude_status,
+        first_seen_from=first_seen_from, first_seen_to=first_seen_to,
     )
     counts = storage.counts_by_status()
     filtered_total = storage.count_jobs(
         status=status, auto_rejected=auto_rejected, ai_failed=ai_failed,
         exclude_status=exclude_status,
+        first_seen_from=first_seen_from, first_seen_to=first_seen_to,
     )
     return JobListResponse(
         count=len(jobs),

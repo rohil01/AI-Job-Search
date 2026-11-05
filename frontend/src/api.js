@@ -76,12 +76,24 @@ async function postJSON(path, body) {
 
 export const getHealth = () => getJSON('/health')
 export const getStats = () => getJSON('/stats')
-export const getJobs = ({ status, order = 'score', limit = 200, offset = 0, autoRejected, aiFailed, excludeStatus } = {}) => {
+export const getJobs = ({
+  status,
+  order = 'score',
+  limit = 200,
+  offset = 0,
+  autoRejected,
+  aiFailed,
+  excludeStatus,
+  firstSeenFrom,
+  firstSeenTo,
+} = {}) => {
   const q = new URLSearchParams()
   if (status) q.set('status', status)
   if (excludeStatus) q.set('exclude_status', excludeStatus)
   if (autoRejected !== undefined && autoRejected !== null) q.set('auto_rejected', String(autoRejected))
   if (aiFailed) q.set('ai_failed', 'true')
+  if (firstSeenFrom) q.set('first_seen_from', firstSeenFrom)
+  if (firstSeenTo) q.set('first_seen_to', firstSeenTo)
   q.set('order', order)
   if (limit != null) q.set('limit', String(limit))
   if (offset) q.set('offset', String(offset))

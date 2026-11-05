@@ -2,16 +2,6 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { formatIstDate } from '../datetime.js'
 import { renderMarkdown } from '../markdown.js'
-import { ScoreGauge } from './ui.jsx'
-
-function salaryText(job) {
-  const { min_amount, max_amount, currency, interval } = job
-  if (!min_amount && !max_amount) return null
-  const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n)
-  const range =
-    min_amount && max_amount ? `${fmt(min_amount)}–${fmt(max_amount)}` : fmt(min_amount || max_amount)
-  return `${currency || ''} ${range}${interval ? ` / ${interval}` : ''}`.trim()
-}
 
 function requiredYearsText(job) {
   const { required_years_min, required_years_max } = job
@@ -75,9 +65,9 @@ function JobDetails({ job, onClose, onStatus }) {
       <section className="details-modal__window" role="dialog" aria-modal="true" aria-labelledby="job-details-title">
         <div className="details-modal__head">
           <div>
-            <p className="eyebrow">Posting details</p>
             <h2 id="job-details-title">{job.title || 'Untitled role'}</h2>
-            <p className="muted">{job.company || 'Unknown company'}{job.location ? ` · ${job.location}` : ''}</p>
+            <p className="muted">{job.company || 'Unknown company'}</p>
+            {job.location ? <p className="muted">{job.location}</p> : null}
           </div>
           <button className="icon-btn" type="button" onClick={onClose} aria-label="Close details">×</button>
         </div>
@@ -128,7 +118,7 @@ function JobDetails({ job, onClose, onStatus }) {
         <div className="details-modal__foot">
           {job.job_url ? (
             <a className="btn btn--primary" href={job.job_url} target="_blank" rel="noreferrer">
-              Open original ↗
+              Open original
             </a>
           ) : null}
           <button className="btn" type="button" onClick={onClose}>Close</button>
@@ -140,27 +130,41 @@ function JobDetails({ job, onClose, onStatus }) {
 
 export default function JobCard({ job, onStatus, busy }) {
   const [detailsJob, setDetailsJob] = useState(null)
-  const salary = salaryText(job)
-  const matched = job.matched_skills || []
-  const missing = job.missing_skills || []
   const status = job.status || 'new'
-  const hasFit = typeof job.score === 'number' || job.verdict || job.reasoning
+  const scoreLabel = typeof job.score === 'number' ? `${Math.round(job.score)} of 100 fit` : 'No fit score'
 
-  function openFromTile(event) {
+  function openFromRow(event) {
     if (event.target.closest('button, a, input, select, textarea')) return
     setDetailsJob(job)
   }
 
+  function openFromKey(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    if (event.target.closest('button, a, input, select, textarea')) return
+    event.preventDefault()
+    setDetailsJob(job)
+  }
+
   return (
-    <article className={`card card--${status}`} onClick={openFromTile}>
-      <div className="card__head">
-        <div>
-          <h3 className="card__title">{job.title || 'Untitled role'}</h3>
-          <div className="card__company">
-            {job.company || 'Unknown company'}
-            {job.location ? <span className="card__loc"> · {job.location}</span> : null}
-          </div>
-        </div>
+    <article
+      className={`card card--${status}`}
+      onClick={openFromRow}
+      onKeyDown={openFromKey}
+      tabIndex={0}
+      aria-label={`${job.title || 'Untitled role'}, ${scoreLabel}`}
+    >
+      <div className="card__main">
+        <h3 className="card__title">{job.title || 'Untitled role'}</h3>
+        <p className="card__company">{job.company || 'Unknown company'}</p>
+        {job.location ? <p className="card__loc">{job.location}</p> : null}
+        {job.auto_rejected ? (
+          <p className="card__note">Outside the experience window</p>
+        ) : null}
+        {job.score_error && (job.score_attempts || 0) > 0 ? (
+          <p className="card__note">
+            {(job.score_attempts || 0) >= 3 ? 'Scoring failed' : `Scoring will retry (${job.score_attempts} of 3)`}
+          </p>
+        ) : null}
         <div className="card__actions">
           <button
             className={`btn btn--small ${status === 'accepted' ? 'btn--ok' : ''}`}
@@ -168,7 +172,7 @@ export default function JobCard({ job, onStatus, busy }) {
             onClick={() => onStatus(job, 'accepted')}
             title="Accept this job"
           >
-            {status === 'accepted' ? 'Accepted ✓' : 'Accept'}
+            {status === 'accepted' ? 'Accepted' : 'Accept'}
           </button>
           <button
             className={`btn btn--small ${status === 'rejected' ? 'btn--danger' : ''}`}
@@ -176,87 +180,16 @@ export default function JobCard({ job, onStatus, busy }) {
             onClick={() => onStatus(job, 'rejected')}
             title="Reject this job"
           >
-            {status === 'rejected' ? 'Rejected ✕' : 'Reject'}
+            {status === 'rejected' ? 'Rejected' : 'Reject'}
           </button>
         </div>
-      </div>
-
-      <div className="badges">
-        {job.auto_rejected ? (
-          <span className="badge badge--warn" title="Rejected by the pipeline because required experience is outside your window">
-            auto · outside experience window
-          </span>
-        ) : null}
-        {job.experience_match != null ? (
-          <span className={job.experience_match ? 'badge badge--ok' : 'badge badge--no'}>
-            {job.experience_match ? '✓ matches experience' : '✕ outside window'}
-          </span>
-        ) : null}
-        {requiredYearsText(job) ? <span className="badge badge--accent">{requiredYearsText(job)}</span> : null}
-        {job.site ? <span className="badge">{job.site}</span> : null}
-        {job.job_type ? <span className="badge">{job.job_type}</span> : null}
-        {job.is_remote ? <span className="badge badge--accent">remote</span> : null}
-        {salary ? <span className="badge badge--muted">{salary}</span> : null}
-        {job.date_posted ? <span className="badge badge--muted">{String(job.date_posted).slice(0, 10)}</span> : null}
-        {job.notified ? <span className="badge badge--muted" title="Telegram alert sent">alerted</span> : null}
-        {job.score_error && (job.score_attempts || 0) > 0 ? (
-          <span
-            className={`badge ${(job.score_attempts || 0) >= 3 ? 'badge--no' : 'badge--warn'}`}
-            title={`AI scoring failed ${job.score_attempts}x: ${job.score_error}`}
-          >
-            {(job.score_attempts || 0) >= 3
-              ? 'AI failed — retries exhausted'
-              : `AI retry ${job.score_attempts}/3 pending`}
-          </span>
-        ) : null}
-      </div>
-
-      {hasFit ? (
-        <div className="fit">
-          <ScoreGauge score={typeof job.score === 'number' ? job.score : null} />
-          <div className="fit__body">
-            <div className="fit__verdict">
-              {job.verdict && job.verdict !== 'unknown' ? (
-                <span className={verdictBadgeClass(job.verdict)}>{job.verdict} fit</span>
-              ) : null}
-              {matched.length || missing.length ? (
-                <span className="badge badge--muted">
-                  {matched.length}✓ · {missing.length}✕ skills
-                </span>
-              ) : null}
-            </div>
-            {matched.length || missing.length ? (
-              <div className="chips">
-                {matched.slice(0, 10).map((s, i) => (
-                  <span key={`m${i}`} className="chip chip--ok">✓ {s}</span>
-                ))}
-                {missing.slice(0, 10).map((s, i) => (
-                  <span key={`x${i}`} className="chip chip--miss">✕ {s}</span>
-                ))}
-              </div>
-            ) : null}
-            {job.reasoning ? <p className="fit__why">{job.reasoning}</p> : null}
-          </div>
-        </div>
-      ) : null}
-
-      {job.description ? (
-        <div className="card__desc">
-          <div
-            className="desc desc--rich"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(job.description) }}
-          />
-        </div>
-      ) : null}
-
-      <div className="card__foot">
-        <button className="link-btn" type="button" onClick={() => setDetailsJob(job)}>
-          View details
-        </button>
         {job.first_seen_at ? (
-          <span className="card__id">seen {formatIstDate(job.first_seen_at)}</span>
+          <p className="card__seen">Seen {formatIstDate(job.first_seen_at)}</p>
         ) : null}
       </div>
+      <p className={`card__score ${typeof job.score === 'number' ? '' : 'card__score--none'}`}>
+        {typeof job.score === 'number' ? Math.round(job.score) : '—'}
+      </p>
 
       {detailsJob
         ? createPortal(<JobDetails job={detailsJob} onClose={() => setDetailsJob(null)} />, document.body)

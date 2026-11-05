@@ -424,8 +424,14 @@ def _status_filter(
     auto_rejected: Optional[bool],
     ai_failed: bool = False,
     exclude_status: Optional[str] = None,
+    first_seen_from: Optional[str] = None,
+    first_seen_to: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
-    """WHERE clause fragment (leading ' WHERE ' when non-empty) + params."""
+    """WHERE clause fragment (leading ' WHERE ' when non-empty) + params.
+
+    ``first_seen_from`` is inclusive and ``first_seen_to`` is exclusive.
+    Both are compared as stored UTC ISO strings.
+    """
     clauses: List[str] = []
     params: List[Any] = []
     if status:
@@ -441,6 +447,12 @@ def _status_filter(
         clauses.append(
             "score IS NULL AND score_error IS NOT NULL AND score_attempts > 0"
         )
+    if first_seen_from:
+        clauses.append("first_seen_at >= ?")
+        params.append(first_seen_from)
+    if first_seen_to:
+        clauses.append("first_seen_at < ?")
+        params.append(first_seen_to)
     if not clauses:
         return "", []
     return " WHERE " + " AND ".join(clauses), params
@@ -451,9 +463,14 @@ def count_jobs(
     auto_rejected: Optional[bool] = None,
     ai_failed: bool = False,
     exclude_status: Optional[str] = None,
+    first_seen_from: Optional[str] = None,
+    first_seen_to: Optional[str] = None,
 ) -> int:
     """Number of jobs matching the filter, ignoring pagination."""
-    where, params = _status_filter(status, auto_rejected, ai_failed, exclude_status)
+    where, params = _status_filter(
+        status, auto_rejected, ai_failed, exclude_status,
+        first_seen_from, first_seen_to,
+    )
     row = query_one(f"SELECT COUNT(*) AS n FROM jobs{where}", tuple(params))
     return row["n"] if row else 0
 
@@ -466,20 +483,25 @@ def list_jobs(
     auto_rejected: Optional[bool] = None,
     ai_failed: bool = False,
     exclude_status: Optional[str] = None,
+    first_seen_from: Optional[str] = None,
+    first_seen_to: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Jobs as dicts, newest-first within equal scores, with parsed skills.
 
     ``auto_rejected`` narrows to pipeline-rejected (True) or manually
     rejected (False) rows; combined with ``status='rejected'`` it keeps the
-    board's Rejected section to the operator's own decisions.
+    board's Rejected tab to the operator's own decisions when requested.
 
     ``ai_failed`` keeps rows whose score is still empty after at least one
     scoring failure, including rows past the retry cap.
 
     ``exclude_status`` drops a status before ``limit`` is applied. The board
-    needs this for rejected rows: they are loaded separately, and leaving
-    them in this query lets a recency page fill up with rejects and hide
-    the jobs the board actually shows.
+    needs this for rejected rows: they have their own tab, and leaving them
+    in this query lets a recency page fill up with rejects and hide the jobs
+    the board actually shows.
+
+    ``first_seen_from`` / ``first_seen_to`` bound ``first_seen_at`` before
+    ``limit``, so a page of "new today" is not a slice of the whole backlog.
     """
     allowed_orders = {
         "score": "score DESC, last_seen_at DESC",
@@ -487,7 +509,10 @@ def list_jobs(
         "title": "title ASC, last_seen_at DESC",
     }
     order_clause = allowed_orders.get(order, allowed_orders["score"])
-    where, params = _status_filter(status, auto_rejected, ai_failed, exclude_status)
+    where, params = _status_filter(
+        status, auto_rejected, ai_failed, exclude_status,
+        first_seen_from, first_seen_to,
+    )
     sql = f"SELECT * FROM jobs{where} ORDER BY {order_clause}"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"

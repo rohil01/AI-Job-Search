@@ -1,131 +1,110 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getJobs, setJobStatus } from '../api.js'
-import { isSameIstDay } from '../datetime.js'
+import { istDayRange, toUtcIso } from '../datetime.js'
 import JobCard from './JobCard.jsx'
 import { ErrorBanner, PageHead, Spinner } from './ui.jsx'
+
+const PAGE_SIZE = 40
 
 const FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'new', label: 'New' },
   { key: 'accepted', label: 'Accepted' },
+  { key: 'rejected', label: 'Rejected' },
   { key: 'ai-failed', label: 'AI failed' },
 ]
 
-const REJECTED_PAGE = 200
+function queryFor(filter, order, page) {
+  const query = { order, limit: PAGE_SIZE, offset: page * PAGE_SIZE }
+  if (filter === 'new') {
+    const { start, end } = istDayRange()
+    return {
+      ...query,
+      status: 'new',
+      firstSeenFrom: toUtcIso(start),
+      firstSeenTo: toUtcIso(end),
+    }
+  }
+  if (filter === 'accepted') return { ...query, status: 'accepted' }
+  if (filter === 'rejected') return { ...query, status: 'rejected' }
+  if (filter === 'ai-failed') return { ...query, aiFailed: true, excludeStatus: 'rejected' }
+  return { ...query, excludeStatus: 'rejected' }
+}
 
 export default function JobsView() {
   const [filter, setFilter] = useState('all')
   const [order, setOrder] = useState('score')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const [reloadToken, setReloadToken] = useState(0)
   const [jobs, setJobs] = useState([])
-  const [failedJobs, setFailedJobs] = useState([])
-  const [rejectedJobs, setRejectedJobs] = useState([])
-  const [rejectedTotal, setRejectedTotal] = useState(0)
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [busyKey, setBusyKey] = useState(null)
-  const [rejectedOpen, setRejectedOpen] = useState(false)
-
-  async function load() {
-    setLoading(true)
-    setError(null)
-    try {
-      const [data, rejectedData, failedData] = await Promise.all([
-        // Rejected rows have their own section, and this list is not paged.
-        // A page taken after sorting let recency fill up with rejects and
-        // show fewer jobs than score or title.
-        getJobs({ order, excludeStatus: 'rejected', limit: null }),
-        // Rejected includes both manual rejects and pipeline auto-rejects.
-        getJobs({ status: 'rejected', order, limit: REJECTED_PAGE }),
-        getJobs({ aiFailed: true, excludeStatus: 'rejected', order: 'recent', limit: null }),
-      ])
-      const failed = (failedData.jobs || []).filter((j) => (j.status || 'new') !== 'rejected')
-      const seen = new Set((data.jobs || []).map((j) => j.job_key))
-      setFailedJobs(failed)
-      setJobs([
-        ...(data.jobs || []).filter((j) => (j.status || 'new') !== 'rejected'),
-        ...failed.filter((j) => !seen.has(j.job_key)),
-      ])
-      setRejectedJobs(rejectedData.jobs || [])
-      setRejectedTotal(rejectedData.filtered_total ?? (rejectedData.jobs || []).length)
-    } catch (e) {
-      setError(e)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   useEffect(() => {
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order])
+    let alive = true
+    setLoading(true)
+    setError(null)
+    getJobs(queryFor(filter, order, page))
+      .then((data) => {
+        if (!alive) return
+        const nextTotal = data.filtered_total ?? (data.jobs || []).length
+        const maxPage = Math.max(0, Math.ceil(nextTotal / PAGE_SIZE) - 1)
+        if (page > maxPage) {
+          setPage(maxPage)
+          return
+        }
+        setJobs(data.jobs || [])
+        setTotal(nextTotal)
+        setLoading(false)
+      })
+      .catch((e) => {
+        if (!alive) return
+        setError(e)
+        setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [filter, order, page, reloadToken])
 
   async function handleStatus(job, status) {
-    const prev = { jobs, rejectedJobs, rejectedTotal, failedJobs }
-    const wasRejected = (job.status || 'new') === 'rejected'
     setBusyKey(job.job_key)
-    // Optimistic update: keep the card in the section that matches its new
-    // status; roll back on failure.
-    if (wasRejected && status !== 'rejected') {
-      setRejectedJobs((list) => list.filter((j) => j.job_key !== job.job_key))
-      setJobs((list) => [{ ...job, status }, ...list])
-      setRejectedTotal((n) => Math.max(0, n - 1))
-      if (job.score_error && (job.score_attempts || 0) > 0) {
-        setFailedJobs((list) => [{ ...job, status }, ...list.filter((j) => j.job_key !== job.job_key)])
-      }
-    } else if (!wasRejected && status === 'rejected') {
-      setJobs((list) => list.filter((j) => j.job_key !== job.job_key))
-      setFailedJobs((list) => list.filter((j) => j.job_key !== job.job_key))
-      setRejectedJobs((list) => [{ ...job, status }, ...list.filter((j) => j.job_key !== job.job_key)])
-      setRejectedTotal((n) => n + 1)
-    } else {
-      const patch = (list) => list.map((j) => (j.job_key === job.job_key ? { ...j, status } : j))
-      setJobs(patch)
-      setFailedJobs(patch)
-      setRejectedJobs(patch)
-    }
+    setError(null)
     try {
       await setJobStatus(job.job_key, status)
+      setReloadToken((n) => n + 1)
     } catch (e) {
       setError(e)
-      setJobs(prev.jobs)
-      setFailedJobs(prev.failedJobs)
-      setRejectedJobs(prev.rejectedJobs)
-      setRejectedTotal(prev.rejectedTotal)
     } finally {
       setBusyKey(null)
     }
   }
 
-  const visible = useMemo(() => {
-    let list = filter === 'ai-failed' ? failedJobs : jobs
-    if (filter === 'new') {
-      // "New" = first seen today (IST calendar day), not merely unreviewed —
-      // a backlog of old 'new' rows otherwise drowns the day's harvest.
-      list = list.filter(
-        (j) => (j.status || 'new') === 'new' && isSameIstDay(j.first_seen_at),
-      )
-    } else if (filter !== 'all' && filter !== 'ai-failed') {
-      list = list.filter((j) => (j.status || 'new') === filter)
-    }
-    return searchFilter(list, search)
-  }, [jobs, failedJobs, filter, search])
-
-  const rejectedVisible = useMemo(
-    () => searchFilter(rejectedJobs, search),
-    [rejectedJobs, search],
-  )
+  const visible = useMemo(() => searchFilter(jobs, search), [jobs, search])
+  const searching = search.trim().length > 0
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <section className="page">
-      <PageHead title="Jobs" lede="Postings from the latest scrapes. Accept or reject from the card." />
+      <PageHead title="Jobs" lede="Postings from the latest scrapes. Accept or reject from the row." />
       <div className="toolbar">
-        <div className="chips-row">
+        <div className="chips-row" role="tablist" aria-label="Job status">
           {FILTERS.map((f) => (
             <button
               key={f.key}
+              type="button"
+              role="tab"
+              aria-selected={filter === f.key}
               className={`chip-btn ${filter === f.key ? 'chip-btn--on' : ''}`}
-              onClick={() => setFilter(f.key)}
+              onClick={() => {
+                setFilter(f.key)
+                setPage(0)
+                setJobs([])
+                setLoading(true)
+              }}
             >
               {f.label}
             </button>
@@ -134,76 +113,131 @@ export default function JobsView() {
         <input
           className="input"
           type="search"
-          placeholder="Search jobs"
+          placeholder="Search this page"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          title="Filters the jobs loaded on this page"
         />
         <label className="inline">
           sort
-          <select className="select" value={order} onChange={(e) => setOrder(e.target.value)}>
+          <select
+            className="select"
+            value={order}
+            onChange={(e) => {
+              setOrder(e.target.value)
+              setPage(0)
+              setJobs([])
+              setLoading(true)
+            }}
+          >
             <option value="score">by score</option>
             <option value="recent">by recency</option>
             <option value="title">by title</option>
           </select>
         </label>
-        <button className="btn" onClick={load} disabled={loading}>
+        <button className="btn" type="button" onClick={() => setReloadToken((n) => n + 1)} disabled={loading}>
           {loading ? <Spinner label="Loading…" /> : 'Refresh'}
         </button>
       </div>
 
       <ErrorBanner error={error} />
 
-      {loading && !jobs.length ? <Spinner label="Loading jobs…" /> : null}
+      {loading ? <Spinner label="Loading jobs…" /> : null}
 
       {!loading && !visible.length ? (
         <div className="empty">
-          {filter === 'ai-failed' ? (
+          {searching && jobs.length ? (
             <>
-              <h3>No scoring failures</h3>
-              <p>Jobs that fail AI scoring show up here until a later run scores them.</p>
+              <h3>Nothing matches your search</h3>
+              <p>Search looks through the jobs on this page.</p>
             </>
           ) : (
-            <>
-              <h3>No jobs in view</h3>
-              <p>Run the pipeline from Settings, or wait for the scheduler.</p>
-            </>
+            <EmptyCopy filter={filter} />
           )}
         </div>
       ) : null}
 
-      <div className="grid">
-        {visible.map((job) => (
-          <JobCard key={job.job_key} job={job} onStatus={handleStatus} busy={busyKey === job.job_key} />
-        ))}
-      </div>
+      {!loading ? (
+        <div className="shortlist">
+          {visible.map((job) => (
+            <JobCard key={job.job_key} job={job} onStatus={handleStatus} busy={busyKey === job.job_key} />
+          ))}
+        </div>
+      ) : null}
 
-      {rejectedTotal > 0 || rejectedVisible.length ? (
-        <div className="rejected-section">
-          <button className="rejected-toggle" onClick={() => setRejectedOpen((v) => !v)}>
-            ✕ Rejected ({rejectedTotal}) {rejectedOpen ? '▲' : '▼'}
+      {!loading && total > 0 ? (
+        <div className="pager">
+          <button
+            className="btn"
+            type="button"
+            disabled={page <= 0}
+            onClick={() => {
+              setJobs([])
+              setLoading(true)
+              setPage((n) => Math.max(0, n - 1))
+            }}
+          >
+            Previous
           </button>
-          {rejectedOpen ? (
-            <>
-              {rejectedTotal > rejectedJobs.length ? (
-                <p className="muted small">
-                  Showing the first {rejectedJobs.length} of {rejectedTotal} — refine with search or clear old
-                  ones via the retention setting in Settings.
-                </p>
-              ) : null}
-              {rejectedVisible.length ? (
-                <div className="grid">
-                  {rejectedVisible.map((job) => (
-                    <JobCard key={job.job_key} job={job} onStatus={handleStatus} busy={busyKey === job.job_key} />
-                  ))}
-                </div>
-              ) : (
-                <p className="muted small">Nothing matches your search.</p>
-              )}
-            </>
-          ) : null}
+          <span className="pager__count">
+            {page * PAGE_SIZE + 1}–{Math.min(total, page * PAGE_SIZE + jobs.length)} of {total}
+          </span>
+          <button
+            className="btn"
+            type="button"
+            disabled={page + 1 >= pageCount}
+            onClick={() => {
+              setJobs([])
+              setLoading(true)
+              setPage((n) => n + 1)
+            }}
+          >
+            Next
+          </button>
         </div>
       ) : null}
     </section>
+  )
+}
+
+function EmptyCopy({ filter }) {
+  if (filter === 'rejected') {
+    return (
+      <>
+        <h3>No rejected jobs</h3>
+        <p>Jobs you reject, and ones the pipeline turns down for experience, show up here.</p>
+      </>
+    )
+  }
+  if (filter === 'ai-failed') {
+    return (
+      <>
+        <h3>No scoring failures</h3>
+        <p>Jobs that fail AI scoring show up here until a later run scores them.</p>
+      </>
+    )
+  }
+  if (filter === 'new') {
+    return (
+      <>
+        <h3>No new jobs today</h3>
+        <p>Jobs first seen today show up here.</p>
+      </>
+    )
+  }
+  if (filter === 'accepted') {
+    return (
+      <>
+        <h3>No accepted jobs</h3>
+        <p>Accept a job from its card to keep it here.</p>
+      </>
+    )
+  }
+  return (
+    <>
+      <h3>No jobs in view</h3>
+      <p>Run the pipeline from Settings, or wait for the scheduler.</p>
+    </>
   )
 }
 

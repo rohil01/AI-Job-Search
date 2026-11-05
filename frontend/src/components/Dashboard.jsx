@@ -601,7 +601,7 @@ export default function Dashboard({ onGoJobs }) {
           <a className="btn" href={exportUrl()} download>
             Download Excel
           </a>
-          <button className="btn" onClick={onGoJobs}>View jobs →</button>
+          <button className="btn" onClick={onGoJobs}>View jobs</button>
         </div>
         {running ? (
           <div style={{ marginTop: 10 }}>
