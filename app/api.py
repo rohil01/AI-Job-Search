@@ -34,6 +34,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -61,6 +62,7 @@ from .config import (
     normalize_scrape_counts,
 )
 from .pipeline import PipelineContext, request_shutdown, run_pipeline, wait_for_idle
+from .timing import begin_request, log as timing_log, server_timing_header, stage
 from .schemas import (
     ApplicationImport,
     ApplicationPatch,
@@ -111,6 +113,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Server-Timing"],
 )
 
 
@@ -151,6 +154,57 @@ def _unauthorized(detail: str) -> JSONResponse:
     response = JSONResponse(status_code=401, content={"detail": detail})
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
+
+
+class TimingMiddleware:
+    """Log one line per API request and return Server-Timing.
+
+    Pure ASGI so the timing record is set in the same task that later copies
+    context into the endpoint. ``/health`` is not logged; the dashboard polls
+    it every 30 seconds.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        timing = begin_request()
+        started = time.perf_counter()
+
+        async def send_timed(message):
+            if message["type"] == "http.response.start":
+                total_ms = (time.perf_counter() - started) * 1000
+                headers = list(message.get("headers") or [])
+                headers.append((
+                    b"server-timing",
+                    server_timing_header(timing, total_ms).encode("latin-1"),
+                ))
+                message = {**message, "headers": headers}
+                path = scope.get("path") or ""
+                if path not in ("/health", "/") and not path.startswith("/assets"):
+                    route = scope.get("route")
+                    route_path = getattr(route, "path", path)
+                    db_ms, queries, stages = timing.snapshot()
+                    stage_text = " ".join(f"{name}={ms:.1f}" for name, ms in stages) or "-"
+                    timing_log.info(
+                        "%s %s %s total_ms=%.1f db_ms=%.1f queries=%d %s",
+                        scope.get("method", ""),
+                        route_path,
+                        message["status"],
+                        total_ms,
+                        db_ms,
+                        queries,
+                        stage_text,
+                    )
+            await send(message)
+
+        await self.app(scope, receive, send_timed)
+
+
+app.add_middleware(TimingMiddleware)
 
 # In-flight manual-run state (process-local; run rows live in SQLite).
 _run_state_lock = threading.Lock()
@@ -265,24 +319,28 @@ def list_jobs_endpoint(
         raise HTTPException(status_code=400, detail="status must be new/accepted/rejected.")
     if exclude_status and exclude_status not in ("new", "accepted", "rejected"):
         raise HTTPException(status_code=400, detail="exclude_status must be new/accepted/rejected.")
-    jobs = storage.list_jobs(
-        status=status, limit=limit, offset=offset, order=order,
-        auto_rejected=auto_rejected, ai_failed=ai_failed,
-        exclude_status=exclude_status,
-        first_seen_from=first_seen_from, first_seen_to=first_seen_to,
-    )
-    counts = storage.counts_by_status()
-    filtered_total = storage.count_jobs(
-        status=status, auto_rejected=auto_rejected, ai_failed=ai_failed,
-        exclude_status=exclude_status,
-        first_seen_from=first_seen_from, first_seen_to=first_seen_to,
-    )
-    return JobListResponse(
-        count=len(jobs),
-        total=counts.get("total", 0),
-        filtered_total=filtered_total,
-        jobs=jobs,
-    )
+    with stage("list_jobs"):
+        jobs = storage.list_jobs(
+            status=status, limit=limit, offset=offset, order=order,
+            auto_rejected=auto_rejected, ai_failed=ai_failed,
+            exclude_status=exclude_status,
+            first_seen_from=first_seen_from, first_seen_to=first_seen_to,
+        )
+    with stage("counts"):
+        counts = storage.counts_by_status()
+    with stage("filtered_count"):
+        filtered_total = storage.count_jobs(
+            status=status, auto_rejected=auto_rejected, ai_failed=ai_failed,
+            exclude_status=exclude_status,
+            first_seen_from=first_seen_from, first_seen_to=first_seen_to,
+        )
+    with stage("response"):
+        return JobListResponse(
+            count=len(jobs),
+            total=counts.get("total", 0),
+            filtered_total=filtered_total,
+            jobs=jobs,
+        )
 
 
 def _rewrite_context(job: Dict[str, Any]) -> Dict[str, str]:
@@ -658,17 +716,18 @@ def get_job_endpoint(job_key: str) -> Dict[str, Any]:
 
 @app.post("/jobs/{job_key:path}/status")
 def set_job_status_endpoint(job_key: str, payload: JobStatusIn) -> Dict[str, Any]:
-    try:
-        updated = storage.set_job_status(job_key, payload.new_status)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not updated:
-        raise HTTPException(status_code=404, detail=f"Unknown job '{job_key}'.")
-    if payload.new_status == "accepted":
-        job = storage.get_job(job_key)
-        if job is not None:
-            storage.ensure_application_for_job(job)
-    return {"job_key": job_key, "status": payload.new_status}
+    with stage("status"):
+        try:
+            updated = storage.set_job_status(job_key, payload.new_status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Unknown job '{job_key}'.")
+        if payload.new_status == "accepted":
+            job = storage.get_job(job_key)
+            if job is not None:
+                storage.ensure_application_for_job(job)
+        return {"job_key": job_key, "status": payload.new_status}
 
 
 @app.get("/applications")
@@ -679,7 +738,8 @@ def list_applications() -> Dict[str, Any]:
 @app.post("/applications", status_code=201)
 def create_application(payload: ApplicationWrite) -> Dict[str, Any]:
     try:
-        return storage.create_application(payload.model_dump())
+        with stage("insert"):
+            return storage.create_application(payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -698,9 +758,10 @@ def import_applications(payload: ApplicationImport) -> Dict[str, Any]:
 @app.patch("/applications/{app_id}")
 def update_application(app_id: str, payload: ApplicationPatch) -> Dict[str, Any]:
     try:
-        updated = storage.update_application(
-            app_id, payload.model_dump(exclude_unset=True)
-        )
+        with stage("update"):
+            updated = storage.update_application(
+                app_id, payload.model_dump(exclude_unset=True)
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:

@@ -1,7 +1,48 @@
 const BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
 const TOKEN_KEY = 'jobspy_api_token'
+const MAX_TIMINGS = 40
 
 let onUnauthorized = null
+const requestTimings = []
+
+function parseServerTiming(header) {
+  const timings = {}
+  if (!header) return timings
+  for (const part of header.split(',')) {
+    const [rawName, ...params] = part.trim().split(';')
+    const name = rawName.trim()
+    const dur = params.map((item) => item.trim()).find((item) => item.startsWith('dur='))
+    if (!name || !dur) continue
+    const value = Number(dur.slice(4))
+    if (!Number.isNaN(value)) timings[name] = value
+  }
+  return timings
+}
+
+function noteTiming(method, path, status, started, header) {
+  const server = parseServerTiming(header)
+  const stages = Object.entries(server)
+    .filter(([name]) => name !== 'total' && name !== 'db')
+    .map(([name, dur]) => `${name}:${dur}`)
+    .join(' ')
+  requestTimings.push({
+    method,
+    path,
+    status,
+    browser_ms: Math.round(performance.now() - started),
+    total_ms: server.total ?? '',
+    db_ms: server.db ?? '',
+    stages,
+  })
+  if (requestTimings.length > MAX_TIMINGS) requestTimings.shift()
+  console.table(requestTimings)
+}
+
+export function getRequestTimings() {
+  return requestTimings.slice()
+}
+
+if (typeof window !== 'undefined') window.__jobspyTimings = requestTimings
 
 export function getToken() {
   try {
@@ -45,18 +86,22 @@ async function readError(res) {
 }
 
 async function getJSON(path) {
+  const started = performance.now()
   const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  noteTiming('GET', path, res.status, started, res.headers.get('Server-Timing'))
   if (res.status === 401) onUnauthorized?.()
   if (!res.ok) throw await readError(res)
   return res.json()
 }
 
 async function sendJSON(path, method, body) {
+  const started = performance.now()
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body ?? {}),
   })
+  noteTiming(method, path, res.status, started, res.headers.get('Server-Timing'))
   if (res.status === 401) onUnauthorized?.()
   if (!res.ok) throw await readError(res)
   if (res.status === 204) return null
@@ -64,11 +109,13 @@ async function sendJSON(path, method, body) {
 }
 
 async function postJSON(path, body) {
+  const started = performance.now()
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body ?? {}),
   })
+  noteTiming('POST', path, res.status, started, res.headers.get('Server-Timing'))
   if (res.status === 401) onUnauthorized?.()
   if (!res.ok) throw await readError(res)
   return res.json()
@@ -135,7 +182,9 @@ export const getResumeInfo = () => getJSON('/resume')
 export const uploadResume = (file) => {
   const form = new FormData()
   form.append('resume', file, file.name)
+  const started = performance.now()
   return fetch(`${BASE}/resume`, { method: 'POST', headers: authHeaders(), body: form }).then(async (res) => {
+    noteTiming('POST', '/resume', res.status, started, res.headers.get('Server-Timing'))
     if (res.status === 401) onUnauthorized?.()
     if (!res.ok) throw await readError(res)
     return res.json()

@@ -19,6 +19,7 @@ WAL mode is enabled for safe concurrent reads while the pipeline writes.
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import DB_PATH
+from .timing import record_db, stage
 from .util import make_json_safe
 
 _conn_lock = threading.Lock()
@@ -234,23 +236,39 @@ def _migrate() -> None:
 
 @contextmanager
 def transaction():
-    """Yield a connection with an open transaction; commit or roll back."""
-    conn = connect()
-    with _conn_lock:
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    """Yield a connection with an open transaction; commit or roll back.
+
+    The timer starts before the connection lock is taken, so a request that
+    is queued behind the pipeline counts that wait in its database time.
+    """
+    started = time.perf_counter()
+    try:
+        conn = connect()
+        with _conn_lock:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        record_db((time.perf_counter() - started) * 1000)
 
 
 def query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    """Run a read-only query, returning rows as dicts."""
-    conn = connect()
-    with _conn_lock:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(row) for row in rows]
+    """Run a read-only query, returning rows as dicts.
+
+    Time includes waiting on ``_conn_lock``, not only the SQL itself.
+    ``query_one`` calls this, so it is timed once.
+    """
+    started = time.perf_counter()
+    try:
+        conn = connect()
+        with _conn_lock:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        record_db((time.perf_counter() - started) * 1000)
 
 
 def query_one(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
@@ -951,12 +969,17 @@ def list_applications() -> List[Dict[str, Any]]:
 
     Accepted jobs that have never had a tracker row are inserted. A row the
     user deleted stays deleted until that job is accepted again.
+
+    ``backfill`` and ``select`` are timed separately: backfill looks up each
+    accepted job, and the select is the list the page renders.
     """
-    backfill_accepted_applications()
-    rows = query(
-        "SELECT * FROM applications ORDER BY date_added DESC, id DESC"
-    )
-    return [_application_public(row) for row in rows]
+    with stage("backfill"):
+        backfill_accepted_applications()
+    with stage("select"):
+        rows = query(
+            "SELECT * FROM applications ORDER BY date_added DESC, id DESC"
+        )
+        return [_application_public(row) for row in rows]
 
 
 def get_application(app_id: str) -> Optional[Dict[str, Any]]:

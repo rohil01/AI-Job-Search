@@ -22,6 +22,26 @@ def test_health(client):
     assert body["db_ready"] is True
 
 
+def test_request_timing_header_splits_database_and_stages(client):
+    jobs = client.get("/jobs")
+    assert jobs.status_code == 200
+    timing = jobs.headers["server-timing"]
+    assert "total;dur=" in timing
+    assert "db;dur=" in timing
+    for name in ("list_jobs", "counts", "filtered_count", "response"):
+        assert f"{name};dur=" in timing
+
+    applications = client.get("/applications")
+    assert applications.status_code == 200
+    app_timing = applications.headers["server-timing"]
+    assert "backfill;dur=" in app_timing
+    assert "select;dur=" in app_timing
+
+    created = client.post("/applications", json={})
+    assert created.status_code == 201
+    assert "insert;dur=" in created.headers["server-timing"]
+
+
 def test_resume_upload_and_get(client, tmp_path):
     # Build a minimal real .docx so extract_text succeeds.
     from io import BytesIO

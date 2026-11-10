@@ -41,6 +41,7 @@ from .agent.tracing import (
 )
 from .config import RESCORE_AFTER_HOURS, clamp_int, normalize_scrape_counts
 from .scraper import JobScraper, ScrapeResult
+from .timing import log as timing_log
 from .util import job_key, make_json_safe
 
 logger = logging.getLogger(__name__)
@@ -470,6 +471,10 @@ def _execute_pipeline(
         "pruned": 0,
         "alerts_sent": 0,
         "duration_s": None,
+        "scrape_s": None,
+        "score_s": None,
+        "export_s": None,
+        "notify_s": None,
         "error": None,
     }
 
@@ -500,6 +505,8 @@ def _execute_pipeline(
             ai_metrics=metrics if metrics.get("calls") else None,
         )
 
+    scrape_started = None
+    score_started = None
     try:
         # Close out runs left 'running' by a crash/earlier deploy.
         reaped = storage.reap_stale_runs()
@@ -513,6 +520,8 @@ def _execute_pipeline(
             return summary
 
         # ---- 1+2. Scrape, persisting each pair before the next cooldown -- #
+        # Upserts run inside the scraper callback, so this clock covers both.
+        scrape_started = time.monotonic()
         _report("Scraping job boards…", 0)
 
         # Stream the scraper's per-(location, term) messages so a
@@ -558,6 +567,7 @@ def _execute_pipeline(
             summary["jobs_scraped"] = len(seen_keys)
         summary["new_jobs"] = new_count
         summary["scrape_errors"] = list(result.errors)
+        summary["scrape_s"] = round(time.monotonic() - scrape_started, 3)
 
         if result.pair_count and result.failed_pairs == result.pair_count:
             logger.error(
@@ -570,6 +580,7 @@ def _execute_pipeline(
 
         # Snapshot before fresh scoring. Failures from this run are not in
         # the list, so they wait for a later run.
+        score_started = time.monotonic()
         retry_tail = [
             (job["job_key"], job) for job in storage.jobs_pending_score_retry()
         ]
@@ -649,6 +660,7 @@ def _execute_pipeline(
             )
 
         circuit_tripped = stopped_early
+        summary["score_s"] = round(time.monotonic() - score_started, 3)
 
         # ---- 5. Retention + export + notify ------------------------------- #
         # Failures here must not throw away scores already committed.
@@ -676,6 +688,7 @@ def _execute_pipeline(
             notes.append(f"Retention failed: {exc}")
 
         _report("Exporting to Excel…", 96)
+        export_started = time.monotonic()
         try:
             from .excel import export_excel
 
@@ -683,14 +696,17 @@ def _execute_pipeline(
         except Exception as exc:  # noqa: BLE001
             logger.exception("Excel export failed")
             notes.append(f"Excel export failed: {exc}")
+        summary["export_s"] = round(time.monotonic() - export_started, 3)
 
         _report("Checking notifications…", 97)
         alerts = 0
+        notify_started = time.monotonic()
         try:
             alerts = notify.notify_above_threshold(context.score_threshold)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Notification failed")
             notes.append(f"Notify failed: {exc}")
+        summary["notify_s"] = round(time.monotonic() - notify_started, 3)
 
         degraded = bool(notes)
         summary.update(
@@ -711,6 +727,23 @@ def _execute_pipeline(
         _close("failed")
     finally:
         summary["duration_s"] = round(time.monotonic() - started, 1)
+        if scrape_started is not None and summary.get("scrape_s") is None:
+            summary["scrape_s"] = round(time.monotonic() - scrape_started, 3)
+        if score_started is not None and summary.get("score_s") is None:
+            summary["score_s"] = round(time.monotonic() - score_started, 3)
+        metrics = summary.get("ai_metrics") or {}
+        timing_log.info(
+            "Run %s stages scrape_s=%s score_s=%s export_s=%s notify_s=%s "
+            "duration_s=%s avg_latency_s=%s rate_wait_s=%s",
+            summary.get("run_id"),
+            summary.get("scrape_s"),
+            summary.get("score_s"),
+            summary.get("export_s"),
+            summary.get("notify_s"),
+            summary.get("duration_s"),
+            metrics.get("avg_latency_s"),
+            metrics.get("rate_wait_s"),
+        )
         annotate_pipeline(trace_span, summary)
         _trace.__exit__(None, None, None)
 

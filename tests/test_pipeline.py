@@ -293,6 +293,11 @@ def test_run_pipeline_no_resume_fails_cleanly(temp_db):
     summary = run_pipeline(trigger="manual")
     assert summary["status"] == "failed"
     assert "resume" in summary["error"].lower()
+    assert summary["scrape_s"] is None
+    assert summary["score_s"] is None
+    assert summary["export_s"] is None
+    assert summary["notify_s"] is None
+    assert summary["duration_s"] is not None
     runs = storage.list_runs()
     assert runs[0]["status"] == "failed"
 
@@ -365,6 +370,10 @@ def test_experience_mismatch_is_auto_rejected(temp_db, monkeypatch):
 
     assert summary["status"] == "completed"
     assert summary["auto_rejected"] == 1
+    assert summary["scrape_s"] is not None
+    assert summary["score_s"] is not None
+    assert summary["export_s"] is not None
+    assert summary["notify_s"] is not None
     job = storage.get_job("https://example.com/senior")
     assert job["status"] == "rejected"
     assert job["auto_rejected"] == 1  # flagged so the board can label it as automatic
