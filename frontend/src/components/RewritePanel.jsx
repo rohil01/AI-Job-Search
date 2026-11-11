@@ -17,32 +17,36 @@ export default function RewritePanel({ job }) {
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const changesRef = useRef(null)
+  const loaded = useRef(null)
+  const loading = useRef(false)
   const running = attempt?.status === 'running'
 
   function applyList(rewrites) {
     const rows = rewrites || []
-    setAttempt(rows[0] || null)
-    setDownload(newestReady(rows))
+    const next = { attempt: rows[0] || null, download: newestReady(rows) }
+    loaded.current = next
+    setAttempt(next.attempt)
+    setDownload(next.download)
+    return next
+  }
+
+  async function load() {
+    if (loaded.current) return loaded.current
+    const body = await listRewrites(job.job_key)
+    return applyList(body.rewrites)
   }
 
   async function refresh() {
-    const body = await listRewrites(job.job_key)
-    applyList(body.rewrites)
-    return (body.rewrites || [])[0] || null
+    loaded.current = null
+    return load()
   }
 
   useEffect(() => {
-    let cancelled = false
-    listRewrites(job.job_key)
-      .then((body) => {
-        if (!cancelled) applyList(body.rewrites)
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message || 'Could not load the rewrite')
-      })
-    return () => {
-      cancelled = true
-    }
+    loaded.current = null
+    setAttempt(null)
+    setDownload(null)
+    setError('')
+    setOpen(false)
   }, [job.job_key])
 
   useEffect(() => {
@@ -53,8 +57,55 @@ export default function RewritePanel({ job }) {
     return () => clearInterval(timer)
   }, [running, job.job_key])
 
+  function missingMessage(row) {
+    if (row?.error) return row.error
+    if (row?.status === 'running') return 'Available when the rewrite finishes.'
+    return 'Résumé has not been created.'
+  }
+
+  function openFile(file) {
+    const link = document.createElement('a')
+    link.href = rewriteDocxUrl(job.job_key, file.id)
+    link.download = rewriteFileName(job.company)
+    link.click()
+  }
+
+  async function onDownload() {
+    if (loading.current) return
+    loading.current = true
+    setError('')
+    try {
+      const result = await load()
+      if (result.download?.docx_ready) openFile(result.download)
+      else setError(missingMessage(result.attempt))
+    } catch (err) {
+      setError(err.message || 'Could not load the rewrite')
+    } finally {
+      loading.current = false
+    }
+  }
+
+  async function onChanges() {
+    if (open) {
+      setOpen(false)
+      return
+    }
+    if (loading.current) return
+    loading.current = true
+    setError('')
+    try {
+      await load()
+      setOpen(true)
+    } catch (err) {
+      setError(err.message || 'Could not load the rewrite')
+    } finally {
+      loading.current = false
+    }
+  }
+
   async function run() {
     setError('')
+    loaded.current = null
     setAttempt((current) => ({ ...(current || {}), status: 'running', winning_patches: [] }))
     try {
       const created = await startRewrite(job.job_key, {})
@@ -66,31 +117,13 @@ export default function RewritePanel({ job }) {
     }
   }
 
-  const ready = Boolean(download?.docx_ready)
   const patches = attempt?.winning_patches || []
 
   return (
     <div className="rewrite-actions">
-      {ready ? (
-        <a
-          className="btn btn--small"
-          href={rewriteDocxUrl(job.job_key, download.id)}
-          download={rewriteFileName(job.company)}
-        >
-          Download résumé
-        </a>
-      ) : (
-        <button
-          className="btn btn--small"
-          type="button"
-          disabled
-          title={running || !attempt
-            ? 'Available when the rewrite finishes'
-            : attempt.error || 'Re-upload the résumé .docx, then use Resume rewrite.'}
-        >
-          Download résumé
-        </button>
-      )}
+      <button className="btn btn--small" type="button" onClick={onDownload}>
+        Download résumé
+      </button>
       <button className="btn btn--small" type="button" onClick={run} disabled={running}>
         {running ? 'Rewriting…' : 'Resume rewrite'}
       </button>
@@ -98,7 +131,7 @@ export default function RewritePanel({ job }) {
         ref={changesRef}
         className="btn btn--small"
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={onChanges}
         aria-expanded={open}
       >
         Changes

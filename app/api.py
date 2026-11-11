@@ -496,6 +496,13 @@ def _write_available_docx(
     return str(path), []
 
 
+def _rewrite_file_ready(row: Optional[Dict[str, Any]]) -> bool:
+    """True when this row already points at a file on disk."""
+    if row is None or row.get("status") == "running":
+        return False
+    return _resolve_rewrite_path(row.get("docx_path")) is not None
+
+
 def _ensure_rewrite_docx(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Fill in a finished rewrite that never got a file.
 
@@ -682,11 +689,16 @@ def rewrite_resume(job_key: str, payload: RewriteIn) -> Dict[str, Any]:
 def list_resume_rewrites_endpoint(job_key: str) -> Dict[str, Any]:
     if storage.get_job(job_key) is None:
         raise HTTPException(status_code=404, detail=f"Unknown job '{job_key}'.")
-    return {
-        "rewrites": [
-            _ensure_rewrite_docx(row) for row in storage.list_resume_rewrites(job_key)
-        ]
-    }
+    rewrites = []
+    for row in storage.list_resume_rewrites(job_key):
+        # A file already on disk is returned as stored. Rebuilding it here
+        # rewrites the Word résumé for every row on the Applications page.
+        # Download still rebuilds, so a stale plain-text file is replaced then.
+        if _rewrite_file_ready(row):
+            rewrites.append(row)
+        else:
+            rewrites.append(_ensure_rewrite_docx(row))
+    return {"rewrites": rewrites}
 
 
 @app.get("/jobs/{job_key:path}/resume-rewrites/{rewrite_id}/docx")

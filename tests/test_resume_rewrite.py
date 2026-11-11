@@ -412,6 +412,34 @@ def test_rewrite_without_original_docx_still_downloads(client):
     assert "Kubernetes" in patched or "Built APIs in Python" in patched
 
 
+def test_list_does_not_rebuild_an_existing_file(client):
+    from app.config import DB_PATH
+    from app import storage
+
+    _upload(client)
+    key = storage.upsert_job(
+        {"job_url": "https://x/already", "title": "Role", "company": "Acme", "description": "A real description."}
+    )
+    folder = DB_PATH.parent / "rewrites"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / "Rohil_Chaturvedi_Acme.docx"
+    payload = _docx_bytes()
+    target.write_bytes(payload)
+    written = target.stat().st_mtime_ns
+    storage.insert_resume_rewrite(
+        {
+            "id": "already-on-disk",
+            "job_key": key,
+            "status": "done",
+            "docx_path": str(target),
+        }
+    )
+    listed = client.get(f"/jobs/{key}/resume-rewrites").json()["rewrites"]
+    assert listed[0]["docx_ready"] is True
+    assert target.stat().st_mtime_ns == written
+    assert target.read_bytes() == payload
+
+
 def test_download_finds_file_when_stored_path_is_from_docker(client):
     from app.agent.resume_io import extract_text
     from app.config import DB_PATH
